@@ -21,6 +21,7 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/of.h>
@@ -35,12 +36,14 @@
 #define STM32H7_BOOST_CLKRATE		20000000UL
 
 #define STM32_ADC_CH_MAX		20	/* max number of channels */
-#define STM32_ADC_CH_SZ			10	/* max channel name size */
+#define STM32_ADC_CH_SZ			16	/* max channel name size */
 #define STM32_ADC_MAX_SQ		16	/* SQ1..SQ16 */
 #define STM32_ADC_MAX_SMP		7	/* SMPx range is [0..7] */
 #define STM32_ADC_TIMEOUT_US		100000
 #define STM32_ADC_TIMEOUT	(msecs_to_jiffies(STM32_ADC_TIMEOUT_US / 1000))
 #define STM32_ADC_HW_STOP_DELAY_MS	100
+#define STM32_ADC_CHAN_NONE		-1
+#define STM32_ADC_VREFINT_VOLTAGE	3300
 
 #define STM32_DMA_BUFFER_SIZE		PAGE_SIZE
 
@@ -75,6 +78,30 @@ enum stm32_adc_extsel {
 	STM32_EXT18,
 	STM32_EXT19,
 	STM32_EXT20,
+};
+
+enum stm32_adc_int_ch {
+	STM32_ADC_INT_CH_NONE = -1,
+	STM32_ADC_INT_CH_VDDCORE,
+	STM32_ADC_INT_CH_VREFINT,
+	STM32_ADC_INT_CH_VBAT,
+	STM32_ADC_INT_CH_NB,
+};
+
+/**
+ * struct stm32_adc_ic - ADC internal channels
+ * @name:	name of the internal channel
+ * @idx:	internal channel enum index
+ */
+struct stm32_adc_ic {
+	const char *name;
+	u32 idx;
+};
+
+static const struct stm32_adc_ic stm32_adc_ic[STM32_ADC_INT_CH_NB] = {
+	{ "vddcore", STM32_ADC_INT_CH_VDDCORE },
+	{ "vrefint", STM32_ADC_INT_CH_VREFINT },
+	{ "vbat", STM32_ADC_INT_CH_VBAT },
 };
 
 /**
@@ -114,6 +141,16 @@ struct stm32_adc_regs {
 };
 
 /**
+ * struct stm32_adc_vrefint - stm32 ADC internal reference voltage data
+ * @vrefint_cal:	vrefint calibration value from nvmem
+ * @vrefint_data:	vrefint actual value
+ */
+struct stm32_adc_vrefint {
+	u32 vrefint_cal;
+	u32 vrefint_data;
+};
+
+/**
  * struct stm32_adc_regspec - stm32 registers definition
  * @dr:			data register offset
  * @ier_eoc:		interrupt enable register & eocie bitfield
@@ -126,6 +163,9 @@ struct stm32_adc_regs {
  * @res:		resolution selection register & bitfield
  * @smpr:		smpr1 & smpr2 registers offset array
  * @smp_bits:		smpr1 & smpr2 index and bitfields
+ * @or_vdd:		option register & vddcore bitfield
+ * @ccr_vbat:		common register & vbat bitfield
+ * @ccr_vref:		common register & vrefint bitfield
  */
 struct stm32_adc_regspec {
 	const u32 dr;
@@ -139,6 +179,9 @@ struct stm32_adc_regspec {
 	const struct stm32_adc_regs res;
 	const u32 smpr[2];
 	const struct stm32_adc_regs *smp_bits;
+	const struct stm32_adc_regs or_vdd;
+	const struct stm32_adc_regs ccr_vbat;
+	const struct stm32_adc_regs ccr_vref;
 };
 
 struct stm32_adc;
@@ -156,6 +199,7 @@ struct stm32_adc;
  * @unprepare:		optional unprepare routine (disable, power-down)
  * @irq_clear:		routine to clear irqs
  * @smp_cycles:		programmable sampling time (ADC clock cycles)
+ * @ts_vrefint_ns:	vrefint minimum sampling time in ns
  */
 struct stm32_adc_cfg {
 	const struct stm32_adc_regspec	*regs;
@@ -169,6 +213,7 @@ struct stm32_adc_cfg {
 	void (*unprepare)(struct iio_dev *);
 	void (*irq_clear)(struct iio_dev *indio_dev, u32 msk);
 	const unsigned int *smp_cycles;
+	const unsigned int ts_vrefint_ns;
 };
 
 /**
@@ -193,7 +238,10 @@ struct stm32_adc_cfg {
  * @pcsel:		bitmask to preselect channels on some devices
  * @smpr_val:		sampling time settings (e.g. smpr1 / smpr2)
  * @cal:		optional calibration data on some devices
+ * @vrefint:		internal reference voltage data
  * @chan_name:		channel name array
+ * @num_diff:		number of differential channels
+ * @int_ch:		internal channel indexes array
  */
 struct stm32_adc {
 	struct stm32_adc_common	*common;
@@ -216,7 +264,10 @@ struct stm32_adc {
 	u32			pcsel;
 	u32			smpr_val[2];
 	struct stm32_adc_calib	cal;
+	struct stm32_adc_vrefint vrefint;
 	char			chan_name[STM32_ADC_CH_MAX][STM32_ADC_CH_SZ];
+	u32			num_diff;
+	int			int_ch[STM32_ADC_INT_CH_NB];
 };
 
 struct stm32_adc_diff_channel {
@@ -449,6 +500,24 @@ static const struct stm32_adc_regspec stm32h7_adc_regspec = {
 	.smp_bits = stm32h7_smp_bits,
 };
 
+static const struct stm32_adc_regspec stm32mp1_adc_regspec = {
+	.dr = STM32H7_ADC_DR,
+	.ier_eoc = { STM32H7_ADC_IER, STM32H7_EOCIE },
+	.ier_ovr = { STM32H7_ADC_IER, STM32H7_OVRIE },
+	.isr_eoc = { STM32H7_ADC_ISR, STM32H7_EOC },
+	.isr_ovr = { STM32H7_ADC_ISR, STM32H7_OVR },
+	.sqr = stm32h7_sq,
+	.exten = { STM32H7_ADC_CFGR, STM32H7_EXTEN_MASK, STM32H7_EXTEN_SHIFT },
+	.extsel = { STM32H7_ADC_CFGR, STM32H7_EXTSEL_MASK,
+		    STM32H7_EXTSEL_SHIFT },
+	.res = { STM32H7_ADC_CFGR, STM32H7_RES_MASK, STM32H7_RES_SHIFT },
+	.smpr = { STM32H7_ADC_SMPR1, STM32H7_ADC_SMPR2 },
+	.smp_bits = stm32h7_smp_bits,
+	.or_vdd = { STM32MP1_ADC2_OR, STM32MP1_VDDCOREEN },
+	.ccr_vbat = { STM32H7_ADC_CCR, STM32H7_VBATEN },
+	.ccr_vref = { STM32H7_ADC_CCR, STM32H7_VREFEN },
+};
+
 /**
  * STM32 ADC registers access routines
  * @adc: stm32 adc instance
@@ -579,6 +648,61 @@ err_clk_dis:
 		clk_disable_unprepare(adc->clk);
 
 	return ret;
+}
+
+static void stm32_adc_int_ch_enable(struct iio_dev *indio_dev)
+{
+	struct stm32_adc *adc = iio_priv(indio_dev);
+	u32 i, val, bits = 0, offset = 0;
+
+	for (i = 0; i < STM32_ADC_INT_CH_NB; i++) {
+		if (adc->int_ch[i] == STM32_ADC_CHAN_NONE)
+			continue;
+
+		switch (i) {
+		case STM32_ADC_INT_CH_VDDCORE:
+			dev_dbg(&indio_dev->dev, "Enable VDDCore\n");
+			stm32_adc_set_bits(adc, adc->cfg->regs->or_vdd.reg,
+					   adc->cfg->regs->or_vdd.mask);
+			break;
+		case STM32_ADC_INT_CH_VREFINT:
+			dev_dbg(&indio_dev->dev, "Enable VREFInt\n");
+			offset = adc->cfg->regs->ccr_vref.reg;
+			bits |= adc->cfg->regs->ccr_vref.mask;
+			break;
+		case STM32_ADC_INT_CH_VBAT:
+			dev_dbg(&indio_dev->dev, "Enable VBAT\n");
+			offset = adc->cfg->regs->ccr_vbat.reg;
+			bits |= adc->cfg->regs->ccr_vbat.mask;
+			break;
+		}
+	}
+
+	if (bits) {
+		val = readl_relaxed(adc->common->base + offset);
+		val |= bits;
+		writel_relaxed(val, adc->common->base + offset);
+	}
+}
+
+static void stm32_adc_int_ch_disable(struct stm32_adc *adc)
+{
+	u32 val, bits, offset, i;
+
+	stm32_adc_clr_bits(adc, adc->cfg->regs->or_vdd.reg,
+			   adc->cfg->regs->or_vdd.mask);
+
+	for (i = 0; i < STM32_ADC_INT_CH_NB; i++) {
+		if (adc->int_ch[i] != STM32_ADC_CHAN_NONE) {
+			offset = adc->cfg->regs->ccr_vref.reg;
+			bits = adc->cfg->regs->ccr_vref.mask |
+				adc->cfg->regs->ccr_vbat.mask;
+			val = readl_relaxed(adc->common->base + offset);
+			val &= ~bits;
+			writel_relaxed(bits, adc->common->base + offset);
+			break;
+		}
+	}
 }
 
 /**
@@ -949,11 +1073,13 @@ static int stm32h7_adc_prepare(struct iio_dev *indio_dev)
 		goto pwr_dwn;
 	calib = ret;
 
+	stm32_adc_int_ch_enable(indio_dev);
+
 	stm32_adc_writel(adc, STM32H7_ADC_DIFSEL, adc->difsel);
 
 	ret = stm32h7_adc_enable(indio_dev);
 	if (ret)
-		goto pwr_dwn;
+		goto ch_disable;
 
 	/* Either restore or read calibration result for future reference */
 	if (calib)
@@ -969,6 +1095,8 @@ static int stm32h7_adc_prepare(struct iio_dev *indio_dev)
 
 disable:
 	stm32h7_adc_disable(indio_dev);
+ch_disable:
+	stm32_adc_int_ch_disable(adc);
 pwr_dwn:
 	stm32h7_adc_enter_pwr_down(adc);
 
@@ -979,7 +1107,9 @@ static void stm32h7_adc_unprepare(struct iio_dev *indio_dev)
 {
 	struct stm32_adc *adc = iio_priv(indio_dev);
 
+	stm32_adc_writel(adc, STM32H7_ADC_PCSEL, 0);
 	stm32h7_adc_disable(indio_dev);
+	stm32_adc_int_ch_disable(adc);
 	stm32h7_adc_enter_pwr_down(adc);
 }
 
@@ -1225,15 +1355,35 @@ static int stm32_adc_read_raw(struct iio_dev *indio_dev,
 			ret = stm32_adc_single_conv(indio_dev, chan, val);
 		else
 			ret = -EINVAL;
+
+		/* If channel mask corresponds to vrefint, store data */
+		if (adc->int_ch[STM32_ADC_INT_CH_VREFINT] == chan->channel)
+			adc->vrefint.vrefint_data = *val;
+
 		iio_device_release_direct_mode(indio_dev);
 		return ret;
 
 	case IIO_CHAN_INFO_SCALE:
 		if (chan->differential) {
-			*val = adc->common->vref_mv * 2;
+			if (adc->vrefint.vrefint_data &&
+			    adc->vrefint.vrefint_cal) {
+				*val = STM32_ADC_VREFINT_VOLTAGE * 2 *
+				       adc->vrefint.vrefint_cal /
+				       adc->vrefint.vrefint_data;
+			} else {
+				*val = adc->common->vref_mv * 2;
+			}
 			*val2 = chan->scan_type.realbits;
 		} else {
-			*val = adc->common->vref_mv;
+			/* Use vrefint data if available */
+			if (adc->vrefint.vrefint_data &&
+			    adc->vrefint.vrefint_cal) {
+				*val = STM32_ADC_VREFINT_VOLTAGE *
+				       adc->vrefint.vrefint_cal /
+				       adc->vrefint.vrefint_data;
+			} else {
+				*val = adc->common->vref_mv;
+			}
 			*val2 = chan->scan_type.realbits;
 		}
 		return IIO_VAL_FRACTIONAL_LOG2;
@@ -1353,7 +1503,7 @@ static int stm32_adc_set_watermark(struct iio_dev *indio_dev, unsigned int val)
 	 * dma cyclic transfers are used, buffer is split into two periods.
 	 * There should be :
 	 * - always one buffer (period) dma is working on
-	 * - one buffer (period) driver can push with iio_trigger_poll().
+	 * - one buffer (period) driver can push data.
 	 */
 	watermark = min(watermark, val * (unsigned)(sizeof(u16)));
 	adc->rx_buf_sz = min(rx_buf_sz, watermark * 2 * adc->num_conv);
@@ -1616,31 +1766,14 @@ static irqreturn_t stm32_adc_trigger_handler(int irq, void *p)
 
 	dev_dbg(&indio_dev->dev, "%s bufi=%d\n", __func__, adc->bufi);
 
-	if (!adc->dma_chan) {
-		/* reset buffer index */
-		adc->bufi = 0;
-		iio_push_to_buffers_with_timestamp(indio_dev, adc->buffer,
-						   pf->timestamp);
-	} else {
-		int residue = stm32_adc_dma_residue(adc);
-
-		while (residue >= indio_dev->scan_bytes) {
-			u16 *buffer = (u16 *)&adc->rx_buf[adc->bufi];
-
-			iio_push_to_buffers_with_timestamp(indio_dev, buffer,
-							   pf->timestamp);
-			residue -= indio_dev->scan_bytes;
-			adc->bufi += indio_dev->scan_bytes;
-			if (adc->bufi >= adc->rx_buf_sz)
-				adc->bufi = 0;
-		}
-	}
-
+	/* reset buffer index */
+	adc->bufi = 0;
+	iio_push_to_buffers_with_timestamp(indio_dev, adc->buffer,
+					   pf->timestamp);
 	iio_trigger_notify_done(indio_dev->trig);
 
 	/* re-enable eoc irq */
-	if (!adc->dma_chan)
-		stm32_adc_conv_irq_enable(adc);
+	stm32_adc_conv_irq_enable(adc);
 
 	return IRQ_HANDLED;
 }
@@ -1685,6 +1818,14 @@ static void stm32_adc_smpr_init(struct stm32_adc *adc, int channel, u32 smp_ns)
 	const struct stm32_adc_regs *smpr = &adc->cfg->regs->smp_bits[channel];
 	u32 period_ns, shift = smpr->shift, mask = smpr->mask;
 	unsigned int smp, r = smpr->reg;
+
+	/*
+	 * For vrefint channel, ensure that the sampling time cannot
+	 * be lower than the one specified in the datasheet
+	 */
+	if (channel == adc->int_ch[STM32_ADC_INT_CH_VREFINT] &&
+	    smp_ns < adc->cfg->ts_vrefint_ns)
+		smp_ns = adc->cfg->ts_vrefint_ns;
 
 	/* Determine sampling time (ADC clock cycles) */
 	period_ns = NSEC_PER_SEC / adc->common->rate;
@@ -1735,17 +1876,11 @@ static void stm32_adc_chan_init_one(struct iio_dev *indio_dev,
 	}
 }
 
-static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
+static int stm32_adc_get_legacy_chan_count(struct iio_dev *indio_dev, struct stm32_adc *adc)
 {
 	struct device_node *node = indio_dev->dev.of_node;
-	struct stm32_adc *adc = iio_priv(indio_dev);
 	const struct stm32_adc_info *adc_info = adc->cfg->adc_info;
-	struct stm32_adc_diff_channel diff[STM32_ADC_CH_MAX];
-	struct property *prop;
-	const __be32 *cur;
-	struct iio_chan_spec *channels;
-	int scan_index = 0, num_channels = 0, num_diff = 0, ret, i;
-	u32 val, smp = 0;
+	int num_channels = 0, ret;
 
 	ret = of_property_count_u32_elems(node, "st,adc-channels");
 	if (ret > adc_info->max_channels) {
@@ -1756,23 +1891,17 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
 	}
 
 	ret = of_property_count_elems_of_size(node, "st,adc-diff-channels",
-					      sizeof(*diff));
+					      sizeof(struct stm32_adc_diff_channel));
 	if (ret > adc_info->max_channels) {
 		dev_err(&indio_dev->dev, "Bad st,adc-diff-channels?\n");
 		return -EINVAL;
 	} else if (ret > 0) {
-		int size = ret * sizeof(*diff) / sizeof(u32);
-
-		num_diff = ret;
+		adc->num_diff = ret;
 		num_channels += ret;
-		ret = of_property_read_u32_array(node, "st,adc-diff-channels",
-						 (u32 *)diff, size);
-		if (ret)
-			return ret;
 	}
 
 	if (!num_channels) {
-		dev_err(&indio_dev->dev, "No channels configured\n");
+		dev_err(indio_dev->dev.parent, "No channel found\n");
 		return -ENODATA;
 	}
 
@@ -1783,10 +1912,45 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
 		return -EINVAL;
 	}
 
-	channels = devm_kcalloc(&indio_dev->dev, num_channels,
-				sizeof(struct iio_chan_spec), GFP_KERNEL);
-	if (!channels)
-		return -ENOMEM;
+	return num_channels;
+}
+
+static int stm32_adc_legacy_chan_init(struct iio_dev *indio_dev,
+				      struct stm32_adc *adc,
+				      struct iio_chan_spec *channels)
+{
+	struct device_node *node = indio_dev->dev.of_node;
+	const struct stm32_adc_info *adc_info = adc->cfg->adc_info;
+	struct stm32_adc_diff_channel diff[STM32_ADC_CH_MAX];
+	u32 num_diff = adc->num_diff;
+	int size = num_diff * sizeof(*diff) / sizeof(u32);
+	int scan_index = 0, val, ret, i;
+	struct property *prop;
+	const __be32 *cur;
+	u32 smp = 0;
+
+	if (num_diff) {
+		ret = of_property_read_u32_array(node, "st,adc-diff-channels",
+						 (u32 *)diff, size);
+		if (ret) {
+			dev_err(&indio_dev->dev, "Failed to get diff channels %d\n", ret);
+			return ret;
+		}
+
+		for (i = 0; i < num_diff; i++) {
+			if (diff[i].vinp >= adc_info->max_channels ||
+			    diff[i].vinn >= adc_info->max_channels) {
+				dev_err(&indio_dev->dev, "Invalid channel in%d-in%d\n",
+					diff[i].vinp, diff[i].vinn);
+				return -EINVAL;
+			}
+
+			stm32_adc_chan_init_one(indio_dev, &channels[scan_index],
+						diff[i].vinp, diff[i].vinn,
+						scan_index, true);
+			scan_index++;
+		}
+	}
 
 	of_property_for_each_u32(node, "st,adc-channels", prop, cur, val) {
 		if (val >= adc_info->max_channels) {
@@ -1797,26 +1961,12 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
 		/* Channel can't be configured both as single-ended & diff */
 		for (i = 0; i < num_diff; i++) {
 			if (val == diff[i].vinp) {
-				dev_err(&indio_dev->dev,
-					"channel %d miss-configured\n",	val);
+				dev_err(&indio_dev->dev, "channel %d misconfigured\n",	val);
 				return -EINVAL;
 			}
 		}
 		stm32_adc_chan_init_one(indio_dev, &channels[scan_index], val,
 					0, scan_index, false);
-		scan_index++;
-	}
-
-	for (i = 0; i < num_diff; i++) {
-		if (diff[i].vinp >= adc_info->max_channels ||
-		    diff[i].vinn >= adc_info->max_channels) {
-			dev_err(&indio_dev->dev, "Invalid channel in%d-in%d\n",
-				diff[i].vinp, diff[i].vinn);
-			return -EINVAL;
-		}
-		stm32_adc_chan_init_one(indio_dev, &channels[scan_index],
-					diff[i].vinp, diff[i].vinn, scan_index,
-					true);
 		scan_index++;
 	}
 
@@ -1827,13 +1977,173 @@ static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
 		 * get either no value, 1 shared value for all indexes, or one
 		 * value per channel.
 		 */
-		of_property_read_u32_index(node, "st,min-sample-time-nsecs",
-					   i, &smp);
+		of_property_read_u32_index(node, "st,min-sample-time-nsecs", i, &smp);
+
 		/* Prepare sampling time settings */
 		stm32_adc_smpr_init(adc, channels[i].channel, smp);
 	}
 
-	indio_dev->num_channels = scan_index;
+	return scan_index;
+}
+
+static int stm32_adc_get_int_ch(struct iio_dev *indio_dev, const char *ch_name,
+				int chan)
+{
+	struct stm32_adc *adc = iio_priv(indio_dev);
+	u16 vrefint;
+	int i, ret;
+
+	for (i = 0; i < STM32_ADC_INT_CH_NB; i++) {
+		if (!strncmp(stm32_adc_ic[i].name, ch_name, STM32_ADC_CH_SZ)) {
+			adc->int_ch[i] = chan;
+			/* If channel is vrefint get calibration data. */
+			if (stm32_adc_ic[i].idx == STM32_ADC_INT_CH_VREFINT) {
+				ret = nvmem_cell_read_u16(&indio_dev->dev, "vrefint", &vrefint);
+				if (ret && ret != -ENOENT && ret != -EOPNOTSUPP) {
+					dev_err(&indio_dev->dev, "nvmem access error %d\n", ret);
+					return ret;
+				}
+				if (ret == -ENOENT)
+					dev_dbg(&indio_dev->dev,
+						"vrefint calibration not found\n");
+				else
+					adc->vrefint.vrefint_cal = vrefint;
+			}
+		}
+	}
+
+	return 0;
+}
+
+static int stm32_adc_generic_chan_init(struct iio_dev *indio_dev,
+				       struct stm32_adc *adc,
+				       struct iio_chan_spec *channels)
+{
+	struct device_node *node = indio_dev->dev.of_node;
+	const struct stm32_adc_info *adc_info = adc->cfg->adc_info;
+	struct device_node *child;
+	const char *name;
+	int val, scan_index = 0, ret, i;
+	bool differential;
+	u32 vin[2];
+
+	for (i = 0; i < STM32_ADC_INT_CH_NB; i++)
+		adc->int_ch[i] = STM32_ADC_CHAN_NONE;
+
+	for_each_available_child_of_node(node, child) {
+		ret = of_property_read_u32(child, "reg", &val);
+		if (ret) {
+			dev_err(&indio_dev->dev, "Missing channel index %d\n", ret);
+			goto err;
+		}
+
+		ret = of_property_read_string(child, "label", &name);
+		/* label is optional */
+		if (!ret) {
+			if (strlen(name) >= STM32_ADC_CH_SZ) {
+				dev_err(&indio_dev->dev, "Label %s exceeds %d characters\n",
+					name, STM32_ADC_CH_SZ);
+				return -EINVAL;
+			}
+			strncpy(adc->chan_name[val], name, STM32_ADC_CH_SZ);
+			ret = stm32_adc_get_int_ch(indio_dev, name, val);
+			if (ret)
+				goto err;
+		} else if (ret != -EINVAL) {
+			dev_err(&indio_dev->dev, "Invalid label %d\n", ret);
+			goto err;
+		}
+
+		if (val >= adc_info->max_channels) {
+			dev_err(&indio_dev->dev, "Invalid channel %d\n", val);
+			ret = -EINVAL;
+			goto err;
+		}
+
+		differential = false;
+		ret = of_property_read_u32_array(child, "diff-channels", vin, 2);
+		/* diff-channels is optional */
+		if (!ret) {
+			differential = true;
+			if (vin[0] != val || vin[1] >= adc_info->max_channels) {
+				dev_err(&indio_dev->dev, "Invalid channel in%d-in%d\n",
+					vin[0], vin[1]);
+				goto err;
+			}
+		} else if (ret != -EINVAL) {
+			dev_err(&indio_dev->dev, "Invalid diff-channels property %d\n", ret);
+			goto err;
+		}
+
+		stm32_adc_chan_init_one(indio_dev, &channels[scan_index], val,
+					vin[1], scan_index, differential);
+
+		ret = of_property_read_u32(child, "st,min-sample-time-nsecs", &val);
+		/* st,min-sample-time-nsecs is optional */
+		if (!ret) {
+			stm32_adc_smpr_init(adc, channels[scan_index].channel, val);
+			if (differential)
+				stm32_adc_smpr_init(adc, vin[1], val);
+		} else if (ret != -EINVAL) {
+			dev_err(&indio_dev->dev, "Invalid st,min-sample-time-nsecs property %d\n",
+				ret);
+			goto err;
+		}
+
+		scan_index++;
+	}
+
+	return scan_index;
+
+err:
+	of_node_put(child);
+
+	return ret;
+}
+
+static int stm32_adc_chan_of_init(struct iio_dev *indio_dev)
+{
+	struct device_node *node = indio_dev->dev.of_node;
+	struct stm32_adc *adc = iio_priv(indio_dev);
+	const struct stm32_adc_info *adc_info = adc->cfg->adc_info;
+	struct iio_chan_spec *channels;
+	int num_channels = 0, ret;
+	bool legacy = false;
+
+	num_channels = of_get_available_child_count(node);
+	/*
+	 * If no channels have been found, fallback to channels legacy properties.
+	 * Legacy channel properties will be ignored, if some channels are
+	 * already defined using the standard binding.
+	 */
+	if (!num_channels) {
+		ret = stm32_adc_get_legacy_chan_count(indio_dev, adc);
+		if (ret < 0)
+			return ret;
+
+		legacy = true;
+		num_channels = ret;
+	}
+
+	if (num_channels > adc_info->max_channels) {
+		dev_err(&indio_dev->dev, "Channel number [%d] exceeds %d\n",
+			num_channels, adc_info->max_channels);
+		return -EINVAL;
+	}
+
+	channels = devm_kcalloc(&indio_dev->dev, num_channels,
+				sizeof(struct iio_chan_spec), GFP_KERNEL);
+	if (!channels)
+		return -ENOMEM;
+
+	if (legacy)
+		ret = stm32_adc_legacy_chan_init(indio_dev, adc, channels);
+	else
+		ret = stm32_adc_generic_chan_init(indio_dev, adc, channels);
+	if (ret < 0)
+		return ret;
+
+	indio_dev->num_channels = ret;
 	indio_dev->channels = channels;
 
 	return 0;
@@ -2105,7 +2415,7 @@ static const struct stm32_adc_cfg stm32h7_adc_cfg = {
 };
 
 static const struct stm32_adc_cfg stm32mp1_adc_cfg = {
-	.regs = &stm32h7_adc_regspec,
+	.regs = &stm32mp1_adc_regspec,
 	.adc_info = &stm32h7_adc_info,
 	.trigs = stm32h7_adc_trigs,
 	.has_vregready = true,
@@ -2115,6 +2425,7 @@ static const struct stm32_adc_cfg stm32mp1_adc_cfg = {
 	.unprepare = stm32h7_adc_unprepare,
 	.smp_cycles = stm32h7_adc_smp_cycles,
 	.irq_clear = stm32h7_adc_irq_clear,
+	.ts_vrefint_ns = 4300,
 };
 
 static const struct of_device_id stm32_adc_of_match[] = {

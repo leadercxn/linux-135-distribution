@@ -240,6 +240,9 @@ enum dwc2_ep0_state {
  *                       1 - SRP Only capable
  *                       2 - No HNP/SRP capable (always available)
  *                      Defaults to best available option (0, 1, then 2)
+ * @otg_rev:		The OTG revision number the device is compliant with,
+ *			in binary-coded decimal (i.e. 2.0 is 0200H).
+ *			(see struct usb_otg_caps)
  * @host_dma:           Specifies whether to use slave or DMA mode for accessing
  *                      the data FIFOs. The driver will automatically detect the
  *                      value for this parameter if none is specified.
@@ -452,6 +455,7 @@ struct dwc2_core_params {
 #define DWC2_CAP_PARAM_SRP_ONLY_CAPABLE		1
 #define DWC2_CAP_PARAM_NO_HNP_SRP_CAPABLE	2
 
+	u16 otg_rev;
 	u8 phy_type;
 #define DWC2_PHY_TYPE_PARAM_FS		0
 #define DWC2_PHY_TYPE_PARAM_UTMI	1
@@ -687,6 +691,7 @@ struct dwc2_hw_params {
  * @grxfsiz:		Backup of GRXFSIZ register
  * @gnptxfsiz:		Backup of GNPTXFSIZ register
  * @gi2cctl:		Backup of GI2CCTL register
+ * @ggpio:		Backup of GGPIO register
  * @glpmcfg:		Backup of GLPMCFG register
  * @gdfifocfg:		Backup of GDFIFOCFG register
  * @pcgcctl:		Backup of PCGCCTL register
@@ -703,6 +708,7 @@ struct dwc2_gregs_backup {
 	u32 grxfsiz;
 	u32 gnptxfsiz;
 	u32 gi2cctl;
+	u32 ggpio;
 	u32 glpmcfg;
 	u32 pcgcctl;
 	u32 pcgcctl1;
@@ -863,6 +869,8 @@ struct dwc2_hregs_backup {
  *                      - USB_DR_MODE_HOST
  *                      - USB_DR_MODE_OTG
  * @role_sw:		usb_role_switch handle
+ * @role_sw_default_mode: default operation mode of controller while usb role
+ *			is USB_ROLE_NONE
  * @hcd_enabled:	Host mode sub-driver initialization indicator.
  * @gadget_enabled:	Peripheral mode sub-driver initialization indicator.
  * @ll_hw_enabled:	Status of low-level hardware resources.
@@ -1046,6 +1054,8 @@ struct dwc2_hregs_backup {
  * @new_connection:	Used in host mode. True if there are new connected
  *			device
  * @enabled:		Indicates the enabling state of controller
+ * @dw_otg_caps:	OTG caps from the platform parameters, used to setup the
+ *			gadget structure.
  *
  */
 struct dwc2_hsotg {
@@ -1058,6 +1068,7 @@ struct dwc2_hsotg {
 	enum usb_otg_state op_state;
 	enum usb_dr_mode dr_mode;
 	struct usb_role_switch *role_sw;
+	enum usb_dr_mode role_sw_default_mode;
 	unsigned int hcd_enabled:1;
 	unsigned int gadget_enabled:1;
 	unsigned int ll_hw_enabled:1;
@@ -1211,6 +1222,7 @@ struct dwc2_hsotg {
 	unsigned int remote_wakeup_allowed:1;
 	struct dwc2_hsotg_ep *eps_in[MAX_EPS_CHANNELS];
 	struct dwc2_hsotg_ep *eps_out[MAX_EPS_CHANNELS];
+	struct usb_otg_caps dw_otg_caps;
 #endif /* CONFIG_USB_DWC2_PERIPHERAL || CONFIG_USB_DWC2_DUAL_ROLE */
 };
 
@@ -1331,6 +1343,8 @@ void dwc2_disable_global_interrupts(struct dwc2_hsotg *hcd);
 
 void dwc2_hib_restore_common(struct dwc2_hsotg *hsotg, int rem_wakeup,
 			     int is_host);
+int dwc2_backup_registers(struct dwc2_hsotg *hsotg);
+int dwc2_restore_registers(struct dwc2_hsotg *hsotg);
 int dwc2_backup_global_registers(struct dwc2_hsotg *hsotg);
 int dwc2_restore_global_registers(struct dwc2_hsotg *hsotg);
 

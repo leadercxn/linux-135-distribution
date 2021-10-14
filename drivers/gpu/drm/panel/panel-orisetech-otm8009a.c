@@ -60,6 +60,9 @@
 #define MCS_CMD2_ENA1	0xFF00	/* Enable Access Command2 "CMD2" */
 #define MCS_CMD2_ENA2	0xFF80	/* Enable Access Orise Command2 */
 
+#define OTM8009A_HDISPLAY	480
+#define OTM8009A_VDISPLAY	800
+
 struct otm8009a {
 	struct device *dev;
 	struct drm_panel panel;
@@ -70,19 +73,35 @@ struct otm8009a {
 	bool enabled;
 };
 
-static const struct drm_display_mode default_mode = {
-	.clock = 29700,
-	.hdisplay = 480,
-	.hsync_start = 480 + 98,
-	.hsync_end = 480 + 98 + 32,
-	.htotal = 480 + 98 + 32 + 98,
-	.vdisplay = 800,
-	.vsync_start = 800 + 15,
-	.vsync_end = 800 + 15 + 10,
-	.vtotal = 800 + 15 + 10 + 14,
-	.flags = 0,
-	.width_mm = 52,
-	.height_mm = 86,
+static const struct drm_display_mode modes[] = {
+	{ /* 50 Hz, preferred */
+		.clock = 29700,
+		.hdisplay = 480,
+		.hsync_start = 480 + 98,
+		.hsync_end = 480 + 98 + 32,
+		.htotal = 480 + 98 + 32 + 98,
+		.vdisplay = 800,
+		.vsync_start = 800 + 15,
+		.vsync_end = 800 + 15 + 10,
+		.vtotal = 800 + 15 + 10 + 14,
+		.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
+		.width_mm = 52,
+		.height_mm = 86,
+	},
+	{ /* 60 Hz */
+		.clock = 33000,
+		.hdisplay = 480,
+		.hsync_start = 480 + 70,
+		.hsync_end = 480 + 70 + 32,
+		.htotal = 480 + 70 + 32 + 72,
+		.vdisplay = 800,
+		.vsync_start = 800 + 15,
+		.vsync_end = 800 + 15 + 10,
+		.vtotal = 800 + 15 + 10 + 16,
+		.flags = DRM_MODE_FLAG_NHSYNC | DRM_MODE_FLAG_NVSYNC,
+		.width_mm = 52,
+		.height_mm = 86,
+	},
 };
 
 static inline struct otm8009a *panel_to_otm8009a(struct drm_panel *panel)
@@ -97,20 +116,6 @@ static void otm8009a_dcs_write_buf(struct otm8009a *ctx, const void *data,
 
 	if (mipi_dsi_dcs_write_buffer(dsi, data, len) < 0)
 		dev_warn(ctx->dev, "mipi dsi dcs write buffer failed\n");
-}
-
-static void otm8009a_dcs_write_buf_hs(struct otm8009a *ctx, const void *data,
-				      size_t len)
-{
-	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
-
-	/* data will be sent in dsi hs mode (ie. no lpm) */
-	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
-
-	otm8009a_dcs_write_buf(ctx, data, len);
-
-	/* restore back the dsi lpm mode */
-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
 }
 
 #define dcs_write_seq(ctx, seq...)			\
@@ -222,12 +227,11 @@ static int otm8009a_init_sequence(struct otm8009a *ctx)
 	/* Default portrait 480x800 rgb24 */
 	dcs_write_seq(ctx, MIPI_DCS_SET_ADDRESS_MODE, 0x00);
 
-	ret = mipi_dsi_dcs_set_column_address(dsi, 0,
-					      default_mode.hdisplay - 1);
+	ret = mipi_dsi_dcs_set_column_address(dsi, 0, OTM8009A_HDISPLAY - 1);
 	if (ret)
 		return ret;
 
-	ret = mipi_dsi_dcs_set_page_address(dsi, 0, default_mode.vdisplay - 1);
+	ret = mipi_dsi_dcs_set_page_address(dsi, 0, OTM8009A_VDISPLAY - 1);
 	if (ret)
 		return ret;
 
@@ -351,24 +355,35 @@ static int otm8009a_get_modes(struct drm_panel *panel,
 			      struct drm_connector *connector)
 {
 	struct drm_display_mode *mode;
+	unsigned int num_modes = ARRAY_SIZE(modes);
+	unsigned int i;
 
-	mode = drm_mode_duplicate(connector->dev, &default_mode);
-	if (!mode) {
-		dev_err(panel->dev, "failed to add mode %ux%u@%u\n",
-			default_mode.hdisplay, default_mode.vdisplay,
-			drm_mode_vrefresh(&default_mode));
-		return -ENOMEM;
+	for (i = 0; i < num_modes; i++) {
+		mode = drm_mode_duplicate(connector->dev, &modes[i]);
+		if (!mode) {
+			dev_err(panel->dev, "failed to add mode %ux%u@%u\n",
+				modes[i].hdisplay,
+				modes[i].vdisplay,
+				drm_mode_vrefresh(&modes[i]));
+			return -ENOMEM;
+		}
+
+		mode->type = DRM_MODE_TYPE_DRIVER;
+
+		/* Setting first mode as preferred */
+		if (!i)
+			mode->type |=  DRM_MODE_TYPE_PREFERRED;
+
+		drm_mode_set_name(mode);
+		drm_mode_probed_add(connector, mode);
 	}
-
-	drm_mode_set_name(mode);
-
-	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
-	drm_mode_probed_add(connector, mode);
 
 	connector->display_info.width_mm = mode->width_mm;
 	connector->display_info.height_mm = mode->height_mm;
+	connector->display_info.bus_flags = DRM_BUS_FLAG_DE_HIGH |
+					    DRM_BUS_FLAG_PIXDATA_DRIVE_POSEDGE;
 
-	return 1;
+	return num_modes;
 }
 
 static const struct drm_panel_funcs otm8009a_drm_funcs = {
@@ -400,7 +415,7 @@ static int otm8009a_backlight_update_status(struct backlight_device *bd)
 		 */
 		data[0] = MIPI_DCS_SET_DISPLAY_BRIGHTNESS;
 		data[1] = bd->props.brightness;
-		otm8009a_dcs_write_buf_hs(ctx, data, ARRAY_SIZE(data));
+		otm8009a_dcs_write_buf(ctx, data, ARRAY_SIZE(data));
 
 		/* set Brightness Control & Backlight on */
 		data[1] = 0x24;
@@ -412,7 +427,7 @@ static int otm8009a_backlight_update_status(struct backlight_device *bd)
 
 	/* Update Brightness Control & Backlight */
 	data[0] = MIPI_DCS_WRITE_CONTROL_DISPLAY;
-	otm8009a_dcs_write_buf_hs(ctx, data, ARRAY_SIZE(data));
+	otm8009a_dcs_write_buf(ctx, data, ARRAY_SIZE(data));
 
 	return 0;
 }
@@ -433,8 +448,18 @@ static int otm8009a_probe(struct mipi_dsi_device *dsi)
 
 	ctx->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(ctx->reset_gpio)) {
-		dev_err(dev, "cannot get reset-gpio\n");
-		return PTR_ERR(ctx->reset_gpio);
+		ret = PTR_ERR(ctx->reset_gpio);
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev, "cannot get reset GPIO: %d\n", ret);
+		return ret;
+	}
+
+	/* Reset the panel to avoid visual artifacts */
+	if (ctx->reset_gpio) {
+		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
+		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
+		msleep(20);
+		gpiod_set_value_cansleep(ctx->reset_gpio, 0);
 	}
 
 	ctx->supply = devm_regulator_get(dev, "power");

@@ -195,6 +195,11 @@
 
 #define NB_PF		8		/* Max nb of HW pixel format */
 
+#define DRM_ARGB_TO_LTDC_RGB24(bgcolor) \
+	((u32)(DRM_ARGB_RED(bgcolor, 8) << 16	\
+	| DRM_ARGB_GREEN(bgcolor, 8) << 8	\
+	| DRM_ARGB_BLUE(bgcolor, 8)))
+
 enum ltdc_pix_fmt {
 	PF_NONE,
 	/* RGB formats */
@@ -363,6 +368,15 @@ static inline u32 get_pixelformat_without_alpha(u32 drm)
 	}
 }
 
+/*
+ * All non-alpha color formats derived from native alpha color formats are
+ * either characterized by a FourCC format code
+ */
+static inline u32 is_xrgb(u32 drm)
+{
+	return ((drm & 'X') == 'X' || (drm & ('X' << 8)) == ('X' << 8));
+}
+
 static irqreturn_t ltdc_irq_thread(int irq, void *arg)
 {
 	struct drm_device *ddev = arg;
@@ -430,7 +444,8 @@ static void ltdc_crtc_atomic_enable(struct drm_crtc *crtc,
 	pm_runtime_get_sync(ddev->dev);
 
 	/* Sets the background color value */
-	reg_write(ldev->regs, LTDC_BCCR, BCCR_BCBLACK);
+	reg_write(ldev->regs, LTDC_BCCR,
+		  DRM_ARGB_TO_LTDC_RGB24(crtc->state->bgcolor));
 
 	/* Enable IRQ */
 	reg_set(ldev->regs, LTDC_IER, IER_RRIE | IER_FUIE | IER_TERRIE);
@@ -450,6 +465,9 @@ static void ltdc_crtc_atomic_disable(struct drm_crtc *crtc,
 	DRM_DEBUG_DRIVER("\n");
 
 	drm_crtc_vblank_off(crtc);
+
+	/* Reset background color */
+	reg_write(ldev->regs, LTDC_BCCR, BCCR_BCBLACK);
 
 	/* disable IRQ */
 	reg_clear(ldev->regs, LTDC_IER, IER_RRIE | IER_FUIE | IER_TERRIE);
@@ -530,7 +548,6 @@ static void ltdc_crtc_mode_set_nofb(struct drm_crtc *crtc)
 	struct drm_encoder *encoder = NULL;
 	struct drm_bridge *bridge = NULL;
 	struct drm_display_mode *mode = &crtc->state->adjusted_mode;
-	struct videomode vm;
 	u32 hsync, vsync, accum_hbp, accum_vbp, accum_act_w, accum_act_h;
 	u32 total_width, total_height;
 	u32 bus_flags = 0;
@@ -539,20 +556,17 @@ static void ltdc_crtc_mode_set_nofb(struct drm_crtc *crtc)
 
 	/* get encoder from crtc */
 	drm_for_each_encoder(encoder, ddev)
-		if (encoder->crtc == crtc)
-			break;
+		if (encoder->crtc == crtc) break;
 
 	if (encoder) {
 		/* get bridge from encoder */
 		list_for_each_entry(bridge, &encoder->bridge_chain, chain_node)
-			if (bridge->encoder == encoder)
-				break;
+			if (bridge->encoder == encoder) break;
 
 		/* Get the connector from encoder */
 		drm_connector_list_iter_begin(ddev, &iter);
 		drm_for_each_connector_iter(connector, &iter)
-			if (connector->encoder == encoder)
-				break;
+			if (connector->encoder == encoder) break;
 		drm_connector_list_iter_end(&iter);
 	}
 
@@ -569,31 +583,33 @@ static void ltdc_crtc_mode_set_nofb(struct drm_crtc *crtc)
 		}
 	}
 
-	drm_display_mode_to_videomode(mode, &vm);
-
 	DRM_DEBUG_DRIVER("CRTC:%d mode:%s\n", crtc->base.id, mode->name);
-	DRM_DEBUG_DRIVER("Video mode: %dx%d", vm.hactive, vm.vactive);
+	DRM_DEBUG_DRIVER("Video mode: %dx%d", mode->hdisplay, mode->vdisplay);
 	DRM_DEBUG_DRIVER(" hfp %d hbp %d hsl %d vfp %d vbp %d vsl %d\n",
-			 vm.hfront_porch, vm.hback_porch, vm.hsync_len,
-			 vm.vfront_porch, vm.vback_porch, vm.vsync_len);
+			 mode->hsync_start - mode->hdisplay,
+			 mode->htotal - mode->hsync_end,
+			 mode->hsync_end - mode->hsync_start,
+			 mode->vsync_start - mode->vdisplay,
+			 mode->vtotal - mode->vsync_end,
+			 mode->vsync_end - mode->vsync_start);
 
 	/* Convert video timings to ltdc timings */
-	hsync = vm.hsync_len - 1;
-	vsync = vm.vsync_len - 1;
-	accum_hbp = hsync + vm.hback_porch;
-	accum_vbp = vsync + vm.vback_porch;
-	accum_act_w = accum_hbp + vm.hactive;
-	accum_act_h = accum_vbp + vm.vactive;
-	total_width = accum_act_w + vm.hfront_porch;
-	total_height = accum_act_h + vm.vfront_porch;
+	hsync = mode->hsync_end - mode->hsync_start - 1;
+	vsync = mode->vsync_end - mode->vsync_start - 1;
+	accum_hbp = mode->htotal - mode->hsync_start - 1;
+	accum_vbp = mode->vtotal - mode->vsync_start - 1;
+	accum_act_w = accum_hbp + mode->hdisplay;
+	accum_act_h = accum_vbp + mode->vdisplay;
+	total_width = mode->htotal - 1;
+	total_height = mode->vtotal - 1;
 
 	/* Configures the HS, VS, DE and PC polarities. Default Active Low */
 	val = 0;
 
-	if (vm.flags & DISPLAY_FLAGS_HSYNC_HIGH)
+	if (mode->flags & DRM_MODE_FLAG_PHSYNC)
 		val |= GCR_HSPOL;
 
-	if (vm.flags & DISPLAY_FLAGS_VSYNC_HIGH)
+	if (mode->flags & DRM_MODE_FLAG_PVSYNC)
 		val |= GCR_VSPOL;
 
 	if (bus_flags & DRM_BUS_FLAG_DE_LOW)
@@ -753,22 +769,44 @@ static int ltdc_plane_atomic_check(struct drm_plane *plane,
 				   struct drm_plane_state *state)
 {
 	struct drm_framebuffer *fb = state->fb;
-	u32 src_w, src_h;
+	struct drm_crtc_state *crtc_state;
+	struct drm_rect *src = &state->src;
+	struct drm_rect *dst = &state->dst;
 
 	DRM_DEBUG_DRIVER("\n");
 
 	if (!fb)
 		return 0;
 
-	/* convert src_ from 16:16 format */
-	src_w = state->src_w >> 16;
-	src_h = state->src_h >> 16;
+	/* convert src from 16:16 format */
+	src->x1 = state->src_x >> 16;
+	src->y1 = state->src_y >> 16;
+	src->x2 = (state->src_w >> 16) + src->x1 - 1;
+	src->y2 = (state->src_h >> 16) + src->y1 - 1;
 
-	/* Reject scaling */
-	if (src_w != state->crtc_w || src_h != state->crtc_h) {
-		DRM_ERROR("Scaling is not supported");
+	dst->x1 = state->crtc_x;
+	dst->y1 = state->crtc_y;
+	dst->x2 = state->crtc_w + dst->x1 - 1;
+	dst->y2 = state->crtc_h + dst->y1 - 1;
+
+	DRM_DEBUG_DRIVER("plane:%d fb:%d (%dx%d)@(%d,%d) -> (%dx%d)@(%d,%d)\n",
+			 plane->base.id, fb->base.id,
+			 src->x2 - src->x1 + 1, src->y2 - src->y1 + 1,
+			 src->x1, src->y1,
+			 dst->x2 - dst->x1 + 1, dst->y2 - dst->y1 + 1,
+			 dst->x1, dst->y1);
+
+	crtc_state = drm_atomic_get_existing_crtc_state(state->state,
+							state->crtc);
+	/* destination coordinates do not have to exceed display sizes */
+	if (crtc_state && (crtc_state->mode.hdisplay <= dst->x2 ||
+			   crtc_state->mode.vdisplay <= dst->y2))
 		return -EINVAL;
-	}
+
+	/* source sizes do not have to exceed destination sizes */
+	if (dst->x2 - dst->x1 < src->x2 - src->x1 ||
+	    dst->y2 - dst->y1 < src->y2 - src->y1)
+		return -EINVAL;
 
 	return 0;
 }
@@ -778,44 +816,37 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
 {
 	struct ltdc_device *ldev = plane_to_ltdc(plane);
 	struct drm_plane_state *state = plane->state;
+	struct drm_rect *src = &state->src;
+	struct drm_rect *dst = &state->dst;
 	struct drm_framebuffer *fb = state->fb;
 	u32 lofs = plane->index * LAY_OFS;
-	u32 x0 = state->crtc_x;
-	u32 x1 = state->crtc_x + state->crtc_w - 1;
-	u32 y0 = state->crtc_y;
-	u32 y1 = state->crtc_y + state->crtc_h - 1;
-	u32 src_x, src_y, src_w, src_h;
 	u32 val, pitch_in_bytes, line_length, paddr, ahbp, avbp, bpcr;
+	u32 bgcolor = DRM_ARGB_TO_LTDC_RGB24(state->crtc->state->bgcolor);
 	enum ltdc_pix_fmt pf;
+	struct drm_rect dr;
 
 	if (!state->crtc || !fb) {
 		DRM_DEBUG_DRIVER("fb or crtc NULL");
 		return;
 	}
 
-	/* convert src_ from 16:16 format */
-	src_x = state->src_x >> 16;
-	src_y = state->src_y >> 16;
-	src_w = state->src_w >> 16;
-	src_h = state->src_h >> 16;
-
-	DRM_DEBUG_DRIVER("plane:%d fb:%d (%dx%d)@(%d,%d) -> (%dx%d)@(%d,%d)\n",
-			 plane->base.id, fb->base.id,
-			 src_w, src_h, src_x, src_y,
-			 state->crtc_w, state->crtc_h,
-			 state->crtc_x, state->crtc_y);
+	/* compute final coordinates of frame buffer */
+	dr.x1 = src->x1 + dst->x1;
+	dr.y1 = src->y1 + dst->y1;
+	dr.x2 = src->x2 + dst->x1;
+	dr.y2 = src->y2 + dst->y1;
 
 	bpcr = reg_read(ldev->regs, LTDC_BPCR);
 	ahbp = (bpcr & BPCR_AHBP) >> 16;
 	avbp = bpcr & BPCR_AVBP;
 
 	/* Configures the horizontal start and stop position */
-	val = ((x1 + 1 + ahbp) << 16) + (x0 + 1 + ahbp);
+	val = ((dr.x2 + 1 + ahbp) << 16) + (dr.x1 + 1 + ahbp);
 	reg_update_bits(ldev->regs, LTDC_L1WHPCR + lofs,
 			LXWHPCR_WHSTPOS | LXWHPCR_WHSPPOS, val);
 
 	/* Configures the vertical start and stop position */
-	val = ((y1 + 1 + avbp) << 16) + (y0 + 1 + avbp);
+	val = ((dr.y2 + 1 + avbp) << 16) + (dr.y1 + 1 + avbp);
 	reg_update_bits(ldev->regs, LTDC_L1WVPCR + lofs,
 			LXWVPCR_WVSTPOS | LXWVPCR_WVSPPOS, val);
 
@@ -834,14 +865,14 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
 
 	/* Configures the color frame buffer pitch in bytes & line length */
 	pitch_in_bytes = fb->pitches[0];
-	line_length = fb->format->cpp[0] *
-		      (x1 - x0 + 1) + (ldev->caps.bus_width >> 3) - 1;
+	line_length = fb->format->cpp[0] * (dr.x2 - dr.x1 + 1) +
+		      (ldev->caps.bus_width >> 3) - 1;
 	val = ((pitch_in_bytes << 16) | line_length);
 	reg_update_bits(ldev->regs, LTDC_L1CFBLR + lofs,
 			LXCFBLR_CFBLL | LXCFBLR_CFBP, val);
 
 	/* Specifies the constant alpha value */
-	val = CONSTA_MAX;
+	val = state->alpha >> 8;
 	reg_update_bits(ldev->regs, LTDC_L1CACR + lofs, LXCACR_CONSTA, val);
 
 	/* Specifies the blending factors */
@@ -849,16 +880,34 @@ static void ltdc_plane_atomic_update(struct drm_plane *plane,
 	if (!fb->format->has_alpha)
 		val = BF1_CA | BF2_1CA;
 
-	/* Manage hw-specific capabilities */
-	if (ldev->caps.non_alpha_only_l1 &&
-	    plane->type != DRM_PLANE_TYPE_PRIMARY)
-		val = BF1_PAXCA | BF2_1PAXCA;
+	/*
+	 * Manage hw-specific capabilities
+	 *
+	 * Depending on the hardware version, the background color can not be
+	 * properly displayed with non-alpha color formats derived from native
+	 * alpha color formats (such as XR24 or XR15) since the use of this
+	 * pixel format generates a non transparent layer. As a workaround,
+	 * the stage background color of the layer and the general background
+	 * color need to be synced.
+	 *
+	 * This is done by activating for all XRGB color format the default
+	 * color as the background color and then setting blending factor
+	 * accordingly.
+	 */
+	if (ldev->caps.non_alpha_only_l1) {
+		if (is_xrgb(fb->format->format)) {
+			val = BF1_CA | BF2_1CA;
+			reg_write(ldev->regs, LTDC_L1DCCR + lofs, bgcolor);
+		} else {
+			val = BF1_PAXCA | BF2_1PAXCA;
+		}
+	}
 
 	reg_update_bits(ldev->regs, LTDC_L1BFCR + lofs,
 			LXBFCR_BF2 | LXBFCR_BF1, val);
 
 	/* Configures the frame buffer line number */
-	val = y1 - y0 + 1;
+	val = dr.y2 - dr.y1 + 1;
 	reg_update_bits(ldev->regs, LTDC_L1CFBLNR + lofs, LXCFBLNR_CFBLN, val);
 
 	/* Sets the FB address */
@@ -992,6 +1041,8 @@ static struct drm_plane *ltdc_plane_create(struct drm_device *ddev,
 
 	drm_plane_helper_add(plane, &ltdc_plane_helper_funcs);
 
+	drm_plane_create_alpha_property(plane);
+
 	DRM_DEBUG_DRIVER("plane:%d created\n", plane->base.id);
 
 	return plane;
@@ -1019,6 +1070,8 @@ static int ltdc_crtc_init(struct drm_device *ddev, struct drm_crtc *crtc)
 		return -EINVAL;
 	}
 
+	drm_plane_create_zpos_immutable_property(primary, 0);
+
 	ret = drm_crtc_init_with_planes(ddev, crtc, primary, NULL,
 					&ltdc_crtc_funcs, NULL);
 	if (ret) {
@@ -1028,6 +1081,7 @@ static int ltdc_crtc_init(struct drm_device *ddev, struct drm_crtc *crtc)
 
 	drm_crtc_helper_add(crtc, &ltdc_crtc_helper_funcs);
 
+	drm_crtc_add_bgcolor_property(crtc);
 	drm_mode_crtc_set_gamma_size(crtc, CLUT_SIZE);
 	drm_crtc_enable_color_mgmt(crtc, 0, false, CLUT_SIZE);
 
@@ -1041,6 +1095,7 @@ static int ltdc_crtc_init(struct drm_device *ddev, struct drm_crtc *crtc)
 			DRM_ERROR("Can not create overlay plane %d\n", i);
 			goto cleanup;
 		}
+		drm_plane_create_zpos_immutable_property(overlay, i);
 	}
 
 	return 0;

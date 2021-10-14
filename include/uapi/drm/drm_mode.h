@@ -97,6 +97,12 @@ extern "C" {
 #define  DRM_MODE_FLAG_3D_TOP_AND_BOTTOM	(7<<14)
 #define  DRM_MODE_FLAG_3D_SIDE_BY_SIDE_HALF	(8<<14)
 
+/* flags for polarity clock & data enable polarities */
+#define DRM_MODE_FLAG_PPIXDATA			(1 << 19)
+#define DRM_MODE_FLAG_NPIXDATA			(1 << 20)
+#define DRM_MODE_FLAG_PDE			(1 << 21)
+#define DRM_MODE_FLAG_NDE			(1 << 22)
+
 /* Picture aspect ratio options */
 #define DRM_MODE_PICTURE_ASPECT_NONE		0
 #define DRM_MODE_PICTURE_ASPECT_4_3		1
@@ -1029,6 +1035,34 @@ struct drm_mode_rect {
 	__s32 x2;
 	__s32 y2;
 };
+
+/*
+ * Put ARGB values into a standard 64-bit representation that can be used
+ * for ioctl parameters, inter-driver commmunication, etc.  If the component
+ * values being provided contain less than 16 bits of precision, they'll
+ * be shifted into the most significant bits.
+ */
+static inline __u64
+drm_argb(__u8 bpc, __u16 alpha, __u16 red, __u16 green, __u16 blue)
+{
+	int msb_shift = 16 - bpc;
+
+	return (__u64)alpha << msb_shift << 48 |
+	       (__u64)red   << msb_shift << 32 |
+	       (__u64)green << msb_shift << 16 |
+	       (__u64)blue  << msb_shift;
+}
+
+/*
+ * Extract the specified number of bits of a specific color component from a
+ * standard 64-bit ARGB value.
+ */
+#define DRM_ARGB_COMP(c, shift, numbits) \
+	(__u16)(((c) & 0xFFFFull << (shift)) >> ((shift) + 16 - (numbits)))
+#define DRM_ARGB_BLUE(c, numbits)  DRM_ARGB_COMP(c, 0, numbits)
+#define DRM_ARGB_GREEN(c, numbits) DRM_ARGB_COMP(c, 16, numbits)
+#define DRM_ARGB_RED(c, numbits)   DRM_ARGB_COMP(c, 32, numbits)
+#define DRM_ARGB_ALPHA(c, numbits) DRM_ARGB_COMP(c, 48, numbits)
 
 #if defined(__cplusplus)
 }

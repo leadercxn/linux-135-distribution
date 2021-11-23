@@ -21,6 +21,7 @@
 #include <linux/pm_runtime.h>
 #include <linux/sched.h>
 #include <linux/clkdev.h>
+#include <linux/uaccess.h>
 
 #include "clk.h"
 
@@ -3230,6 +3231,127 @@ static int clk_max_rate_show(struct seq_file *s, void *data)
 }
 DEFINE_SHOW_ATTRIBUTE(clk_max_rate);
 
+/* Debugfs set_rate entry */
+static int clk_debug_rate_get(void *data, u64 *rate)
+{
+	struct clk_core *c = data;
+
+	*rate = clk_core_get_rate_nolock(c);
+
+	return 0;
+}
+
+static int clk_debug_rate_set(void *data, u64 rate)
+{
+	struct clk_core *c = data;
+
+	return clk_core_set_rate_nolock(c, rate);
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(clk_debug_rate_fops, clk_debug_rate_get,
+			clk_debug_rate_set, "%lld\n");
+
+/* Debugfs prepare_enable entry */
+static int clk_debug_prep_enable(void *data, u64 count)
+{
+	struct clk_core *c = data;
+	int i, ret = 0;
+
+	for (i = 0; i < count; i++) {
+		ret = clk_core_prepare_enable(c);
+		if (ret)
+			return ret;
+	}
+
+	return ret;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(clk_debug_prep_enable_fops, NULL,
+			clk_debug_prep_enable, "%lld\n");
+
+/* Debugfs disable_unprepare entry */
+static int clk_debug_disable_unprep(void *data, u64 count)
+{
+	struct clk_core *c = data;
+	int i;
+
+	for (i = 0; i < count; i++)
+		clk_core_disable_unprepare(c);
+
+	return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(clk_debug_disable_unprep_fops, NULL,
+			clk_debug_disable_unprep, "%lld\n");
+
+/* Debugfs set_parent entry */
+static ssize_t clk_debug_parent_get(struct file *file,
+				    char __user *user_buf,
+				    size_t count, loff_t *ppos)
+{
+	struct clk_core *p, *c = file->private_data;
+	int ret;
+
+	if (*ppos)		/* continued read */
+		return 0;
+
+	p = c->parent;
+	count = min(strlen(p->name), count);
+
+	ret = copy_to_user(user_buf, p->name, count);
+	if (ret) {
+		pr_err("%s: error reading data\n", __func__);
+		return -EINVAL;
+	}
+
+	/* Add \n */
+	ret = copy_to_user(user_buf + count, "\n", 1);
+	if (ret) {
+		pr_err("%s: error reading data\n", __func__);
+		return -EINVAL;
+	}
+	count++;
+
+	*ppos += count;
+
+	return count;
+}
+
+static ssize_t clk_debug_parent_set(struct file *file,
+				    const char __user *user_buf,
+				    size_t count, loff_t *ppos)
+{
+	struct clk_core *p, *c = file->private_data;
+	char pname[50]; /* 50 char shud be enough for clock name + \0 */
+	int ret;
+
+	count = min(sizeof(pname), count);
+	strncpy_from_user(pname, user_buf, count);
+	pname[count - 1] = 0; /* NULL terminate */
+
+	p = clk_core_lookup(pname);
+	if (!p) {
+			pr_err("%s: %s not found\n", __func__, pname);
+			return -EINVAL;
+	}
+
+	ret = clk_core_set_parent_nolock(c, p);
+	if (ret) {
+		pr_err("%s: %s Incorrect Argument\n", __func__, pname);
+		return -EINVAL;
+	}
+
+	return count;
+}
+
+static const struct file_operations clk_debug_parent_fops = {
+	.open = simple_open,
+	.read		= clk_debug_parent_get,
+	.write		= clk_debug_parent_set,
+};
+
+
+
 static void clk_debug_create_one(struct clk_core *core, struct dentry *pdentry)
 {
 	struct dentry *root;
@@ -3261,6 +3383,18 @@ static void clk_debug_create_one(struct clk_core *core, struct dentry *pdentry)
 	if (core->num_parents > 0)
 		debugfs_create_file("clk_parent", 0444, root, core,
 				    &current_parent_fops);
+
+	debugfs_create_file("clk_set_rate", 0666, root,
+			core, &clk_debug_rate_fops);
+
+	debugfs_create_file("clk_set_parent", 0666,
+			root, core, &clk_debug_parent_fops);
+
+	debugfs_create_file("clk_prepare_enable", 00200, root,
+			core, &clk_debug_prep_enable_fops);
+
+	debugfs_create_file("clk_disable_unprepare", 00200, root,
+			core, &clk_debug_disable_unprep_fops);
 
 	if (core->num_parents > 1)
 		debugfs_create_file("clk_possible_parents", 0444, root, core,

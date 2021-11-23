@@ -108,6 +108,10 @@ patternProperties:
         properties:
           vbus-supply: true
 
+      interrupts:
+        maxItems: 1
+        description: interrupt used for wakeup when port is used by USBH controller
+
     allOf:
       - if:
           properties:

@@ -43,6 +43,7 @@
 #define STM32_GPIO_LCKR		0x1c
 #define STM32_GPIO_AFRL		0x20
 #define STM32_GPIO_AFRH		0x24
+#define STM32_GPIO_SECCFGR	0x30
 
 /* custom bitfield to backup pin status */
 #define STM32_GPIO_BKP_MODE_SHIFT	0
@@ -95,6 +96,7 @@ struct stm32_gpio_bank {
 	u32 bank_ioport_nr;
 	u32 pin_backup[STM32_GPIO_PINS_PER_BANK];
 	u8 irq_type[STM32_GPIO_PINS_PER_BANK];
+	bool secure_control;
 };
 
 struct stm32_pinctrl {
@@ -296,6 +298,35 @@ static int stm32_gpio_get_direction(struct gpio_chip *chip, unsigned int offset)
 	return ret;
 }
 
+static int stm32_gpio_init_valid_mask(struct gpio_chip *chip,
+				      unsigned long *valid_mask,
+				      unsigned int ngpios)
+{
+	struct stm32_gpio_bank *bank = gpiochip_get_data(chip);
+	struct stm32_pinctrl *pctl = dev_get_drvdata(bank->gpio_chip.parent);
+	unsigned int i;
+	u32 sec;
+
+	/* All gpio are valid per default */
+	bitmap_fill(valid_mask, ngpios);
+
+	if (bank->secure_control) {
+		/* Tag secured pins as invalid */
+		clk_enable(bank->clk);
+		sec = readl_relaxed(bank->base + STM32_GPIO_SECCFGR);
+		clk_disable(bank->clk);
+
+		for (i = 0; i < ngpios; i++) {
+			if (sec & BIT(i)) {
+				clear_bit(i, valid_mask);
+				dev_dbg(pctl->dev, "No access to gpio %d - %d\n", bank->bank_nr, i);
+			}
+		}
+	}
+
+	return 0;
+}
+
 static const struct gpio_chip stm32_gpio_template = {
 	.request		= stm32_gpio_request,
 	.free			= stm32_gpio_free,
@@ -306,6 +337,7 @@ static const struct gpio_chip stm32_gpio_template = {
 	.to_irq			= stm32_gpio_to_irq,
 	.get_direction		= stm32_gpio_get_direction,
 	.set_config		= gpiochip_generic_config,
+	.init_valid_mask	= stm32_gpio_init_valid_mask,
 };
 
 static void stm32_gpio_irq_trigger(struct irq_data *d)
@@ -863,12 +895,32 @@ static int stm32_pmx_gpio_set_direction(struct pinctrl_dev *pctldev,
 	return stm32_pmx_set_mode(bank, pin, !input, 0);
 }
 
+static int stm32_pmx_request(struct pinctrl_dev *pctldev, unsigned gpio)
+{
+	struct stm32_pinctrl *pctl = pinctrl_dev_get_drvdata(pctldev);
+	struct pinctrl_gpio_range *range;
+
+	range = pinctrl_find_gpio_range_from_pin_nolock(pctldev, gpio);
+	if (!range) {
+		dev_err(pctl->dev, "No gpio range defined.\n");
+		return -EINVAL;
+	}
+
+	if (!gpiochip_line_is_valid(range->gc, stm32_gpio_pin(gpio))) {
+		dev_warn(pctl->dev, "Can't access gpio %d\n", gpio);
+		return -EACCES;
+	}
+
+	return 0;
+}
+
 static const struct pinmux_ops stm32_pmx_ops = {
 	.get_functions_count	= stm32_pmx_get_funcs_cnt,
 	.get_function_name	= stm32_pmx_get_func_name,
 	.get_function_groups	= stm32_pmx_get_func_groups,
 	.set_mux		= stm32_pmx_set_mux,
 	.gpio_set_direction	= stm32_pmx_gpio_set_direction,
+	.request		= stm32_pmx_request,
 	.strict			= true,
 };
 
@@ -1079,6 +1131,11 @@ static int stm32_pconf_parse_conf(struct pinctrl_dev *pctldev,
 	bank = gpiochip_get_data(range->gc);
 	offset = stm32_gpio_pin(pin);
 
+	if (!gpiochip_line_is_valid(range->gc, offset)) {
+		dev_warn(pctl->dev, "Can't access gpio %d\n", pin);
+		return -EACCES;
+	}
+
 	switch (param) {
 	case PIN_CONFIG_DRIVE_PUSH_PULL:
 		ret = stm32_pconf_set_driving(bank, offset, 0);
@@ -1198,6 +1255,11 @@ static void stm32_pconf_dbg_show(struct pinctrl_dev *pctldev,
 	bank = gpiochip_get_data(range->gc);
 	offset = stm32_gpio_pin(pin);
 
+	if (!gpiochip_line_is_valid(range->gc, offset)) {
+		seq_puts(s, "NO ACCESS");
+		return;
+	}
+
 	stm32_pmx_get_mode(bank, offset, &mode, &alt);
 	bias = stm32_pconf_get_bias(bank, offset);
 
@@ -1315,6 +1377,7 @@ static int stm32_gpiolib_register_bank(struct stm32_pinctrl *pctl,
 	bank->gpio_chip.parent = dev;
 	bank->bank_nr = bank_nr;
 	bank->bank_ioport_nr = bank_ioport_nr;
+	bank->secure_control = pctl->match_data->secure_control;
 	spin_lock_init(&bank->lock);
 
 	/* create irq hierarchical domain */
@@ -1453,17 +1516,6 @@ static int stm32_pctrl_create_pins_tab(struct stm32_pinctrl *pctl,
 	return 0;
 }
 
-static void stm32_pctl_get_package(struct device_node *np,
-				   struct stm32_pinctrl *pctl)
-{
-	if (of_property_read_u32(np, "st,package", &pctl->pkg)) {
-		pctl->pkg = 0;
-		dev_warn(pctl->dev, "No package detected, use default one\n");
-	} else {
-		dev_dbg(pctl->dev, "package detected: %x\n", pctl->pkg);
-	}
-}
-
 int stm32_pctl_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
@@ -1511,8 +1563,9 @@ int stm32_pctl_probe(struct platform_device *pdev)
 	pctl->dev = dev;
 	pctl->match_data = match->data;
 
-	/*  get package information */
-	stm32_pctl_get_package(np, pctl);
+	/*  get optional package information */
+	if (!of_property_read_u32(np, "st,package", &pctl->pkg))
+		dev_dbg(pctl->dev, "package detected: %x\n", pctl->pkg);
 
 	pctl->pins = devm_kcalloc(pctl->dev, pctl->match_data->npins,
 				  sizeof(*pctl->pins), GFP_KERNEL);
@@ -1628,6 +1681,9 @@ static int __maybe_unused stm32_pinctrl_restore_gpio_regs(
 	if (!range)
 		return 0;
 
+	if (!gpiochip_line_is_valid(range->gc, offset))
+		return 0;
+
 	pin_is_irq = gpiochip_line_is_irq(range->gc, offset);
 
 	if (!desc || (!pin_is_irq && !desc->gpio_owner))
@@ -1680,8 +1736,8 @@ int __maybe_unused stm32_pinctrl_resume(struct device *dev)
 	struct stm32_pinctrl_group *g = pctl->groups;
 	int i;
 
-	for (i = g->pin; i < g->pin + pctl->ngroups; i++)
-		stm32_pinctrl_restore_gpio_regs(pctl, i);
+	for (i = 0; i < pctl->ngroups; i++, g++)
+		stm32_pinctrl_restore_gpio_regs(pctl, g->pin);
 
 	return 0;
 }

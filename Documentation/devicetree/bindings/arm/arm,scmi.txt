@@ -14,10 +14,11 @@ Required properties:
 
 The scmi node with the following properties shall be under the /firmware/ node.
 
-- compatible : shall be "arm,scmi" or "arm,scmi-smc" for smc/hvc transports
-- mboxes: List of phandle and mailbox channel specifiers. It should contain
-	  exactly one or two mailboxes, one for transmitting messages("tx")
-	  and another optional for receiving the notifications("rx") if
+- compatible : shall be "arm,scmi" or "arm,scmi-smc" for smc/hvc transports,
+	  or "linaro,scmi-optee" for OP-TEE transport.
+- mboxes: List of phandle and mailbox channel specifiers. When used, it should
+	  contain exactly one or two mailboxes, one for transmitting messages
+	  ("tx") and another optional for receiving the notifications("rx") if
 	  supported.
 - shmem : List of phandle pointing to the shared memory(SHM) area as per
 	  generic mailbox client binding.
@@ -26,6 +27,7 @@ The scmi node with the following properties shall be under the /firmware/ node.
 - #size-cells : should be '0' as 'reg' property doesn't have any size
 	  associated with it.
 - arm,smc-id : SMC id required when using smc or hvc transports
+- linaro,channel-id : Channel ID required when using OP-TEE transports
 
 Optional properties:
 
@@ -61,6 +63,34 @@ domain binding[2].
 Required properties:
  - #power-domain-cells : Should be 1. Contains the device or the power
 			 domain ID value used by SCMI commands.
+
+Regulator bindings for the SCMI Regulator based on SCMI Message Protocol
+------------------------------------------------------------
+
+An SCMI Regulator is permanently bound to a well defined SCMI Voltage Domain,
+and should be always positioned as a root regulator.
+It does not support negative voltages nor any current operation.
+
+This binding uses the common regulator binding[6].
+
+SCMI Regulators are grouped under a 'regulators' node which in turn is a child
+of the SCMI Voltage protocol node inside the desired SCMI instance node.
+
+Required properties: at least one of:
+ - reg : shall identify an existent SCMI Voltage Domain.
+ - voltd-name : shall identify an existent SCMI Voltage Domain.
+
+At least one of reg and voltd-name property must be defined to identify the
+SCMI voltage domain bound to the voltage regulator, reg takes precedence.
+
+Optional properties:
+ - regulator-min-microvolt: when defined should be non-negative.
+ - regulator-max-microvolt: when defined should be non-negative.
+ - all of the other standard regulator bindings as in [6]: note that, since
+   the SCMI Protocol itself aims in fact to hide away many of the operational
+   capabilities usually exposed by the properties of a standard regulator,
+   most of the usual regulator bindings could have just no effect in the
+   context of this SCMI regulator.
 
 Sensor bindings for the sensors based on SCMI Message Protocol
 --------------------------------------------------------------
@@ -105,6 +135,7 @@ Required sub-node properties:
 [3] Documentation/devicetree/bindings/thermal/thermal*.yaml
 [4] Documentation/devicetree/bindings/sram/sram.yaml
 [5] Documentation/devicetree/bindings/reset/reset.txt
+[6] Documentation/devicetree/bindings/regulator/regulator.yaml
 
 Example:
 
@@ -168,6 +199,25 @@ firmware {
 		scmi_reset: protocol@16 {
 			reg = <0x16>;
 			#reset-cells = <1>;
+		};
+
+		scmi_voltage: protocol@17 {
+			reg = <0x17>;
+
+			regulators {
+				regulator_cpu: regulator_scmi_cpu@0 {
+					reg = <0x0>;
+					regulator-max-microvolt = <3300000>;
+				};
+
+				regulator_gpu: regulator_scmi_gpu@9 {
+					reg = <0x9>;
+					regulator-min-microvolt = <500000>;
+					regulator-max-microvolt = <4200000>;
+				};
+
+				...
+			};
 		};
 	};
 };

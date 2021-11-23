@@ -526,6 +526,7 @@ int hwrng_register(struct hwrng *rng)
 		put_rng(rng);
 	return 0;
 out_unlock:
+	list_del(&rng->list);
 	mutex_unlock(&rng_mutex);
 out:
 	return err;

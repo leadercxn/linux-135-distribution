@@ -592,8 +592,8 @@
 	pinctrl-0 = <&usart1_pins_a>;
 	pinctrl-1 = <&usart1_sleep_pins_a>;
 	pinctrl-2 = <&usart1_idle_pins_a>;
-	uart-has-rtscts;
-	status = "disabled";
+	//uart-has-rtscts;
+	status = "okay";
 };
 
 /* Bluetooth */

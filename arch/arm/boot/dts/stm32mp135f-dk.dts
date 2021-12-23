@@ -382,6 +382,18 @@
 			};
 		};
 	};
+
+	wm8960: wm8960@34 {
+		#sound-dai-cells = <0x0>;
+		compatible = "wlf,wm8960";
+		status = "okay";
+
+		reg = <0x34>;
+
+		clock-names = "wm-mclk";
+
+		wlf,shared-lrclk;
+	};
 };
 
 &iwdg2 {
@@ -512,7 +524,7 @@
 &timers3 {
 	/delete-property/dmas;
 	/delete-property/dma-names;
-	status = "disabled";
+	status = "okay";
 	pwm {
 		pinctrl-0 = <&pwm3_pins_a>;
 		pinctrl-1 = <&pwm3_sleep_pins_a>;
@@ -527,7 +539,7 @@
 &timers4 {
 	/delete-property/dmas;
 	/delete-property/dma-names;
-	status = "disabled";
+	status = "okay";
 	pwm {
 		pinctrl-0 = <&pwm4_pins_a>;
 		pinctrl-1 = <&pwm4_sleep_pins_a>;

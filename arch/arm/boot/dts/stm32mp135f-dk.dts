@@ -25,6 +25,8 @@
 		serial1 = &usart1;
 		serial2 = &uart8;
 		serial3 = &usart2;
+
+		sound1 = "/sound1";
 	};
 
 	chosen {
@@ -78,6 +80,12 @@
 		clk_mco1: clk-mco1 {
 			#clock-cells = <0>;
 			compatible = "fixed-clock";
+			clock-frequency = <24000000>;
+		};
+
+		wm8960_mclk: wm8960_mclk {
+			compatible = "fixed-clock";
+			#clock-cells = <0x0>;
 			clock-frequency = <24000000>;
 		};
 	};
@@ -143,6 +151,53 @@
 	wifi_pwrseq: wifi-pwrseq {
 		compatible = "mmc-pwrseq-simple";
 		reset-gpios = <&mcp23017 11 GPIO_ACTIVE_LOW>;
+	};
+
+	sound1 {
+		compatible = "simple-audio-card";
+		simple-audio-card,name = "Seeed-ReSpeaker";
+		status = "okay";
+
+		simple-audio-card,widgets =
+			"Microphone", "MICB",
+			"Line", "LINPUT1",
+			"Line", "LINPUT2",
+			"Line", "LINPUT3",
+			"Line", "RINPUT1",
+			"Line", "RINPUT2",
+			"Line", "RINPUT3",
+			"Headphone", "HP_L",
+			"Headphone", "HP_R",
+			"Speaker", "SPK_LP",
+			"Speaker", "SPK_LN",
+			"Speaker", "SPK_RP",
+			"Speaker", "SPK_RN";
+		simple-audio-card,routing =
+			"Playback" , "wm-mclk",
+			"Capture" , "wm-mclk",
+			"LINPUT1" , "MICB";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,bitclock-master = <&sound1_master>;
+		simple-audio-card,frame-master = <&sound1_master>;
+		/* simple-audio-card,bitclock-inversion; */
+
+		/* sound1_master:*/
+		sound1_master: simple-audio-card,cpu {
+			sound-dai = <&sai1>;
+			system-clock-direction-out;
+			system-clock-frequency = <0>;
+			system-clock-id = <1>;
+		};
+
+		simple-audio-card,codec {
+			sound-dai = <&wm8960>;
+			/*
+			system-clock-frequency = <12288000>;
+			system-clock-id = <1>;
+			*/
+			system-clock-frequency = <24000000>;
+			system-clock-id = <0>;
+		};
 	};
 };
 
@@ -307,7 +362,7 @@
 	pinctrl-1 = <&i2c5_sleep_pins_a>;
 	i2c-scl-rising-time-ns = <185>;
 	i2c-scl-falling-time-ns = <20>;
-	clock-frequency = <400000>;
+	clock-frequency = <100000>;
 	status = "okay";
 	/* spare dmas for other usage */
 	/delete-property/dmas;
@@ -383,16 +438,36 @@
 		};
 	};
 
-	wm8960: wm8960@34 {
-		#sound-dai-cells = <0x0>;
+	wm8960: wm8960@1a {
 		compatible = "wlf,wm8960";
+		reg = <0x1a>;
+		#sound-dai-cells = <0>;
 		status = "okay";
 
-		reg = <0x34>;
-
+		clocks = <&wm8960_mclk>;
 		clock-names = "wm-mclk";
 
 		wlf,shared-lrclk;
+		wlf,double-dai;
+
+		wm8960_port: port {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			wm8960_tx_endpoint: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&sai1a_endpoint>;
+				frame-master;
+				bitclock-master;
+			};
+
+			wm8960_rx_endpoint: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&sai1b_endpoint>;
+				frame-master;
+				bitclock-master;
+			};
+		};
 	};
 };
 
@@ -664,4 +739,79 @@
 &usbphyc_port1 {
 	phy-supply = <&scmi_vdd_usb>;
 	st,phy-tuning = <&usb_phy_tuning>;
+};
+
+
+&sai1 {
+	#sound-dai-cells = <0>;
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&sai1_pins_a>, <&sai1_pins_b>;
+	pinctrl-1 = <&sai1_sleep_pins_a>, <&sai1_sleep_pins_b>;
+	clocks = <&rcc SAI1>, <&rcc PLL3_Q>, <&rcc PLL3_R>;
+	clock-names = "pclk", "x8k", "x11k";
+	status = "okay";
+
+	sai1a: audio-controller@4400a004 {
+		status = "okay";
+		#clock-cells = <0>;
+		dma-names = "tx";
+		pinctrl-names = "default";
+
+		sai1a_port: port {
+			sai1a_endpoint: endpoint {
+				remote-endpoint = <&wm8960_tx_endpoint>;
+				format = "i2s";
+				mclk-fs = <256>;
+				dai-tdm-slot-num = <2>;
+				dai-tdm-slot-width = <0>;	/* 0 = AUTO-WIDTH */
+			};
+		};
+	};
+
+	sai1b: audio-controller@4400a024 {
+		status = "okay";
+		dma-names = "rx";
+		st,sync = <&sai1a 2>;
+		pinctrl-names = "default";
+
+		sai1b_port: port {
+			sai1b_endpoint: endpoint {
+				remote-endpoint = <&wm8960_rx_endpoint>;
+				format = "i2s";
+				mclk-fs = <256>;
+				dai-tdm-slot-num = <2>;
+				dai-tdm-slot-width = <0>;	/* 0 = AUTO-WIDTH */
+			};
+		};
+	};
+};
+
+&pinctrl {
+	sai1_pins_a: sai1a-1 {
+		pins {
+			pinmux = <STM32_PINMUX('A', 4, AF12)>,	/* SAI1_SCKA */
+					 <STM32_PINMUX('F', 11, AF6)>,	/* SAI1_FSA */
+					 <STM32_PINMUX('A', 5, AF6)>;	/* SAI1_SDA */
+		};
+	};
+
+	sai1_sleep_pins_a: sai1a-sleep-1 {
+		pins {
+			pinmux = <STM32_PINMUX('A', 4, ANALOG)>,	/* SAI1_SCK */
+					 <STM32_PINMUX('F', 11, ANALOG)>,	/* SAI1_FS */
+					 <STM32_PINMUX('A', 5, ANALOG)>;	/* SAI1_SDA */
+		};
+	};
+
+	sai1_pins_b: sai1b-1 {
+		pins {
+			pinmux = <STM32_PINMUX('A', 0, AF6)>;		/* SAI1_SDB */
+		};
+	};
+
+	sai1_sleep_pins_b: sai1b-sleep-1 {
+		pins {
+			pinmux = <STM32_PINMUX('A', 0, ANALOG)>;	/* SAI1_SDB */
+		};
+	};
 };

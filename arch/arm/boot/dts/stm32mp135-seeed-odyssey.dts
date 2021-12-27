@@ -126,15 +126,4 @@
 &i2c5 {
 	status = "okay";
 
-	wm8960: wm8960@34 {
-		#sound-dai-cells = <0x0>;
-		compatible = "wlf,wm8960";
-		status = "okay";
-
-		reg = <0x34>;
-
-		clock-names = "wm-mclk";
-
-		wlf,shared-lrclk;
-	};
 };

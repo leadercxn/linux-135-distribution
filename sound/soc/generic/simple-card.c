@@ -600,6 +600,8 @@ static int asoc_simple_probe(struct platform_device *pdev)
 	if (!priv)
 		return -ENOMEM;
 
+	dev_info(dev, "asoc_simple_probe start\n");
+
 	card = simple_priv_to_card(priv);
 	card->owner		= THIS_MODULE;
 	card->dev		= dev;

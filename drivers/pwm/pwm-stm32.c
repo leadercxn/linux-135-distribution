@@ -408,7 +408,10 @@ static int stm32_pwm_enable(struct stm32_pwm *priv, int ch)
 
 	ret = clk_enable(priv->clk);
 	if (ret)
+	{
+		dev_err(priv->chip.dev, "failed to enable pwm clock\n");
 		return ret;
+	}
 
 	/* Enable channel */
 	mask = TIM_CCER_CC1E << (ch * 4);
@@ -461,13 +464,24 @@ static int stm32_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	if (state->polarity != pwm->state.polarity)
 		stm32_pwm_set_polarity(priv, pwm->hwpwm, state->polarity);
 
+	dev_info(priv->chip.dev, "duty_cycle = %lld , period = %lld  enable = %d\n", state->duty_cycle, state->period,state->enabled);
+
 	ret = stm32_pwm_config(priv, pwm->hwpwm,
 			       state->duty_cycle, state->period);
 	if (ret)
+	{
+		dev_err(priv->chip.dev, "stm32_pwm_config failed\n");
 		return ret;
+	}
 
 	if (!enabled && state->enabled)
+	{
 		ret = stm32_pwm_enable(priv, pwm->hwpwm);
+		if(ret)
+		{
+			dev_err(priv->chip.dev, "stm32_pwm_enable failed\n");
+		}
+	}
 
 	return ret;
 }
@@ -482,6 +496,8 @@ static int stm32_pwm_apply_locked(struct pwm_chip *chip, struct pwm_device *pwm,
 	mutex_lock(&priv->lock);
 	ret = stm32_pwm_apply(chip, pwm, state);
 	mutex_unlock(&priv->lock);
+
+	dev_info(priv->chip.dev, "stm32_pwm_apply_locked done\n");
 
 	return ret;
 }

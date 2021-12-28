@@ -671,7 +671,7 @@
 	pinctrl-2 = <&uart8_idle_pins_a>;
 	/delete-property/dmas;
 	/delete-property/dma-names;
-	status = "disabled";
+	status = "okay";
 };
 
 &usart1 {

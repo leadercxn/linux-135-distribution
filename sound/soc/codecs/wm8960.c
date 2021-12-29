@@ -1281,6 +1281,8 @@ static int wm8960_set_dai_sysclk(struct snd_soc_dai *dai, int clk_id,
 	struct snd_soc_component *component = dai->component;
 	struct wm8960_priv *wm8960 = snd_soc_component_get_drvdata(component);
 
+	clk_id = WM8960_SYSCLK_PLL;
+
 	switch (clk_id) {
 	case WM8960_SYSCLK_MCLK:
 		snd_soc_component_update_bits(component, WM8960_CLOCK1,
@@ -1296,6 +1298,7 @@ static int wm8960_set_dai_sysclk(struct snd_soc_dai *dai, int clk_id,
 		return -EINVAL;
 	}
 
+	wm8960->freq_in = 24000000;
 	wm8960->sysclk = freq;
 	wm8960->clk_id = clk_id;
 
@@ -1354,9 +1357,19 @@ static int wm8960_probe(struct snd_soc_component *component)
 	return 0;
 }
 
+static int wm8960_of_xlate_dai_id(struct snd_soc_component *component,
+				   struct device_node *endpoint)
+{
+	/* return dai id 0, whatever the endpoint index */
+	printk("CGU2: wm8960_of_xlate_dai_id\n");
+	return 0;
+}
+
+
 static const struct snd_soc_component_driver soc_component_dev_wm8960 = {
 	.probe			= wm8960_probe,
 	.set_bias_level		= wm8960_set_bias_level,
+	.of_xlate_dai_id	= wm8960_of_xlate_dai_id,
 	.suspend_bias_off	= 1,
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
@@ -1407,6 +1420,8 @@ static int wm8960_i2c_probe(struct i2c_client *i2c,
 		return -ENOMEM;
 
 	dev_info(&i2c->dev, "wm8960_i2c_probe start\n");
+
+	wm8960->clk_id = WM8960_SYSCLK_PLL;
 
 	wm8960->mclk = devm_clk_get(&i2c->dev, "mclk");
 	if (IS_ERR(wm8960->mclk)) {

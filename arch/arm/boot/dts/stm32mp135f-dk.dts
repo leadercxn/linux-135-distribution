@@ -6,6 +6,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/clock/stm32mp13-clks.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/leds/common.h>
@@ -25,8 +26,6 @@
 		serial1 = &usart1;
 		serial2 = &uart8;
 		serial3 = &usart2;
-
-		sound1 = "/sound1";
 	};
 
 	chosen {
@@ -84,9 +83,9 @@
 		};
 
 		wm8960_mclk: wm8960_mclk {
-			compatible = "fixed-clock";
-			#clock-cells = <0x0>;
-			clock-frequency = <24000000>;
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <12288000>;
 		};
 	};
 
@@ -153,51 +152,28 @@
 		reset-gpios = <&mcp23017 11 GPIO_ACTIVE_LOW>;
 	};
 
-	sound1 {
-		compatible = "simple-audio-card";
-		simple-audio-card,name = "Seeed-ReSpeaker";
-		status = "okay";
+	sound {
+		compatible = "audio-graph-card";
+		label = "seeed-2mic-voicecard";
+		widgets =
+			"Microphone", "Mic Jack",
+			"Line", "Line In",
+			"Line", "Line Out",
+			"Speaker", "Speaker",
+			"Headphone", "Headphone Jack";
 
-		simple-audio-card,widgets =
-			"Microphone", "MICB",
-			"Line", "LINPUT1",
-			"Line", "LINPUT2",
-			"Line", "LINPUT3",
-			"Line", "RINPUT1",
-			"Line", "RINPUT2",
-			"Line", "RINPUT3",
-			"Headphone", "HP_L",
-			"Headphone", "HP_R",
+		routing =
+			"Headphone Jack", "HP_L",
+			"Headphone Jack", "HP_R",
 			"Speaker", "SPK_LP",
 			"Speaker", "SPK_LN",
-			"Speaker", "SPK_RP",
-			"Speaker", "SPK_RN";
-		simple-audio-card,routing =
-			"Playback" , "wm-mclk",
-			"Capture" , "wm-mclk",
-			"LINPUT1" , "MICB";
-		simple-audio-card,format = "i2s";
-		simple-audio-card,bitclock-master = <&sound1_master>;
-		simple-audio-card,frame-master = <&sound1_master>;
-		/* simple-audio-card,bitclock-inversion; */
+			"LINPUT1", "Mic Jack",
+			"LINPUT3", "Mic Jack",
+			"RINPUT1", "Mic Jack",
+			"RINPUT2", "Mic Jack";
 
-		/* sound1_master:*/
-		sound1_master: simple-audio-card,cpu {
-			sound-dai = <&sai1>;
-			system-clock-direction-out;
-			system-clock-frequency = <0>;
-			system-clock-id = <1>;
-		};
-
-		simple-audio-card,codec {
-			sound-dai = <&wm8960>;
-			/*
-			system-clock-frequency = <12288000>;
-			system-clock-id = <1>;
-			*/
-			system-clock-frequency = <24000000>;
-			system-clock-id = <0>;
-		};
+		dais = <&sai1a_port &sai1b_port>;
+		status = "okay";
 	};
 };
 
@@ -442,13 +418,12 @@
 		compatible = "wlf,wm8960";
 		reg = <0x1a>;
 		#sound-dai-cells = <0>;
-		status = "okay";
-
+		AVDD-supply = <&scmi_vdd>;
+		DVDD-supply = <&scmi_v3v3_sw>;
 		clocks = <&wm8960_mclk>;
-		clock-names = "wm-mclk";
-
+		clock-names = "mclk";
 		wlf,shared-lrclk;
-		wlf,double-dai;
+		status = "okay";
 
 		wm8960_port: port {
 			#address-cells = <1>;
@@ -456,14 +431,14 @@
 
 			wm8960_tx_endpoint: endpoint@0 {
 				reg = <0>;
-				remote-endpoint = <&sai1a_endpoint>;
+				remote-endpoint = <&sai1b_endpoint>;
 				frame-master;
 				bitclock-master;
 			};
 
 			wm8960_rx_endpoint: endpoint@1 {
 				reg = <1>;
-				remote-endpoint = <&sai1b_endpoint>;
+				remote-endpoint = <&sai1a_endpoint>;
 				frame-master;
 				bitclock-master;
 			};
@@ -747,40 +722,33 @@
 	pinctrl-names = "default", "sleep";
 	pinctrl-0 = <&sai1_pins_a>, <&sai1_pins_b>;
 	pinctrl-1 = <&sai1_sleep_pins_a>, <&sai1_sleep_pins_b>;
-	clocks = <&rcc SAI1>, <&rcc PLL3_Q>, <&rcc PLL3_R>;
+	clocks = <&rcc SAI1>, <&scmi0_clk CK_SCMI0_PLL3_Q>, <&scmi0_clk CK_SCMI0_PLL3_R>;
 	clock-names = "pclk", "x8k", "x11k";
 	status = "okay";
 
 	sai1a: audio-controller@4400a004 {
+		dma-names = "rx";
 		status = "okay";
-		#clock-cells = <0>;
-		dma-names = "tx";
-		pinctrl-names = "default";
 
 		sai1a_port: port {
 			sai1a_endpoint: endpoint {
-				remote-endpoint = <&wm8960_tx_endpoint>;
+				remote-endpoint = <&wm8960_rx_endpoint>;
 				format = "i2s";
-				mclk-fs = <256>;
 				dai-tdm-slot-num = <2>;
-				dai-tdm-slot-width = <0>;	/* 0 = AUTO-WIDTH */
 			};
 		};
 	};
 
 	sai1b: audio-controller@4400a024 {
-		status = "okay";
-		dma-names = "rx";
 		st,sync = <&sai1a 2>;
-		pinctrl-names = "default";
+		dma-names = "tx";
+		status = "okay";
 
 		sai1b_port: port {
 			sai1b_endpoint: endpoint {
-				remote-endpoint = <&wm8960_rx_endpoint>;
+				remote-endpoint = <&wm8960_tx_endpoint>;
 				format = "i2s";
-				mclk-fs = <256>;
 				dai-tdm-slot-num = <2>;
-				dai-tdm-slot-width = <0>;	/* 0 = AUTO-WIDTH */
 			};
 		};
 	};
@@ -792,6 +760,9 @@
 			pinmux = <STM32_PINMUX('A', 4, AF12)>,	/* SAI1_SCKA */
 					 <STM32_PINMUX('F', 11, AF6)>,	/* SAI1_FSA */
 					 <STM32_PINMUX('A', 5, AF6)>;	/* SAI1_SDA */
+			slew-rate = <0>;
+			drive-push-pull;
+			bias-disable;
 		};
 	};
 
@@ -806,6 +777,9 @@
 	sai1_pins_b: sai1b-1 {
 		pins {
 			pinmux = <STM32_PINMUX('A', 0, AF6)>;		/* SAI1_SDB */
+			slew-rate = <0>;
+			drive-push-pull;
+			bias-disable;
 		};
 	};
 

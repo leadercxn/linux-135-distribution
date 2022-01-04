@@ -585,6 +585,9 @@
 	timer@2 {
 		status = "okay";
 	};
+	counter {
+		status = "okay";
+	};
 };
 
 &timers4 {
@@ -618,7 +621,7 @@
 };
 
 &timers14 {
-	status = "disabled";
+	status = "okay";
 	pwm {
 		pinctrl-0 = <&pwm14_pins_a>;
 		pinctrl-1 = <&pwm14_sleep_pins_a>;
@@ -647,7 +650,7 @@
 	pinctrl-2 = <&uart8_idle_pins_a>;
 	/delete-property/dmas;
 	/delete-property/dma-names;
-	status = "okay";
+	status = "disabled";
 };
 
 &usart1 {

@@ -464,8 +464,6 @@ static int stm32_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	if (state->polarity != pwm->state.polarity)
 		stm32_pwm_set_polarity(priv, pwm->hwpwm, state->polarity);
 
-	dev_info(priv->chip.dev, "duty_cycle = %lld , period = %lld  enable = %d\n", state->duty_cycle, state->period,state->enabled);
-
 	ret = stm32_pwm_config(priv, pwm->hwpwm,
 			       state->duty_cycle, state->period);
 	if (ret)
@@ -496,8 +494,6 @@ static int stm32_pwm_apply_locked(struct pwm_chip *chip, struct pwm_device *pwm,
 	mutex_lock(&priv->lock);
 	ret = stm32_pwm_apply(chip, pwm, state);
 	mutex_unlock(&priv->lock);
-
-	dev_info(priv->chip.dev, "stm32_pwm_apply_locked done\n");
 
 	return ret;
 }

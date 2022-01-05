@@ -360,6 +360,18 @@
 		status = "okay" ;
 	};
 
+	ft5306: ft5306_ts@38 {
+		compatible = "edt,edt-ft5306";
+		reg = <0x38>;
+		interrupt-parent = <&gpiof>;
+		interrupts = <5 IRQ_TYPE_EDGE_FALLING>;
+	        reset-gpios = <&gpioh 2 GPIO_ACTIVE_LOW>;
+	        vcc-supply = <&scmi_v3v3_sw>;
+		touchscreen-size-x = <480>;
+		touchscreen-size-y = <272>;
+		status = "okay" ;
+	};
+
 	stmipi: stmipi@14 {
 		compatible = "st,st-mipid02";
 		reg = <0x14>;

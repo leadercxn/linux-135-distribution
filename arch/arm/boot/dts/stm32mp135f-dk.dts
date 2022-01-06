@@ -417,8 +417,9 @@
 		AVDD-supply = <&scmi_v3v3_sw>;
 		DVDD-supply = <&scmi_v3v3_sw>;
 		status = "okay";
-		powerdown-gpios = <&mcp23017 8 (GPIO_ACTIVE_LOW | GPIO_PUSH_PULL)>;
+		powerdown-gpios = <&mcp23017 3 (GPIO_ACTIVE_LOW | GPIO_PUSH_PULL)>;
 		reset-gpios = <&mcp23017 2 (GPIO_ACTIVE_LOW | GPIO_PUSH_PULL)>;
+		rotation = <180>;
 
 		port {
 			ov5640_0: endpoint {

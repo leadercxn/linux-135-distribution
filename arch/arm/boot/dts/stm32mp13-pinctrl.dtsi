@@ -158,7 +158,7 @@
 
 	goodix_pins_a: goodix-0 {
 		pins {
-			pinmux = <STM32_PINMUX('F', 5, ANALOG)>;
+			pinmux = <STM32_PINMUX('A', 4, ANALOG)>;
 			bias-pull-down;
 		};
 	};

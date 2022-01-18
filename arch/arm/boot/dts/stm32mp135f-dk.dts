@@ -189,11 +189,12 @@
 	port {
 		dcmipp_0: endpoint {
 			remote-endpoint = <&ov5640_0>;
+			bus-type = <5>;
 			bus-width = <8>;
 			hsync-active = <0>;
 			vsync-active = <0>;
-			pclk-sample = <0>;
-			pclk-max-frequency = <120000000>;
+			pclk-sample = <1>;
+			pclk-max-frequency = <77000000>;
 		};
 	};
 };
@@ -274,15 +275,19 @@
 		AVDD-supply = <&scmi_v3v3_sw>;
 		DVDD-supply = <&scmi_v3v3_sw>;
 		status = "okay";
-		powerdown-gpios = <&gpioa 14 (GPIO_ACTIVE_LOW | GPIO_PUSH_PULL)>;
+		powerdown-gpios = <&gpioa 14 (GPIO_ACTIVE_HIGH | GPIO_PUSH_PULL)>;
 		reset-gpios = <&gpiof 11 (GPIO_ACTIVE_LOW | GPIO_PUSH_PULL)>;
 		rotation = <180>;
 
 		port {
 			ov5640_0: endpoint {
 				remote-endpoint = <&dcmipp_0>;
-				clock-lanes = <0>;
-				data-lanes = <1 2>;
+				bus-width = <8>;
+				data-shift = <2>;
+				hsync-active = <0>;
+				vsync-active = <0>;
+				pclk-sample = <1>;
+				pclk-max-frequency = <77000000>;
 			};
 		};
 	};

@@ -111,7 +111,7 @@
 		};
 
 		panel-timing {
-			clock-frequency = <10000000>;
+			clock-frequency = <25000000>;
 			hactive = <800>;
 			vactive = <480>;
 			hsync-len = <40>;

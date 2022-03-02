@@ -65,6 +65,13 @@
 			linux,default-trigger = "heartbeat";
 			default-state = "off";
 		};
+
+		usben2 {
+			label = "usb-en2";
+			gpios = <&gpiog  1  GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "usb-en2";
+			default-state = "on";
+		};
 	};
 
 	clocks {
@@ -460,7 +467,7 @@
 &timers1 {
 	/delete-property/dmas;
 	/delete-property/dma-names;
-	status = "okay";
+	status = "disabled";
 	pwm {
 		pinctrl-0 = <&pwm1_pins_a>;
 		pinctrl-1 = <&pwm1_sleep_pins_a>;
@@ -529,16 +536,23 @@
 	status = "okay";
 };
 
+&usbh_ohci{
+	status = "okay";
+	phys = <&usbphyc_port0>;
+};
+
 &usbotg_hs {
+	pinctrl-0 = <&usbotg_hs_pins_a>;
+    pinctrl-names = "default";
 	phys = <&usbphyc_port1 0>;
 	phy-names = "usb2-phy";
 	usb-role-switch;
 	status = "okay";
-	port {
-		usbotg_hs_ep: endpoint {
+//	port {
+//		usbotg_hs_ep: endpoint {
 //			remote-endpoint = <&con_usb_c_g0_ep>;
-		};
-	};
+//		};
+//	};
 };
 
 &usbphyc {

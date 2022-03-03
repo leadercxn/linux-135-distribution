@@ -472,10 +472,10 @@
 		pinctrl-0 = <&pwm1_pins_a>;
 		pinctrl-1 = <&pwm1_sleep_pins_a>;
 		pinctrl-names = "default", "sleep";
-		status = "okay";
+		status = "disabled";
 	};
 	timer@2 {
-		status = "okay";
+		status = "disabled";
 	};
 };
 
@@ -546,13 +546,7 @@
     pinctrl-names = "default";
 	phys = <&usbphyc_port1 0>;
 	phy-names = "usb2-phy";
-	usb-role-switch;
 	status = "okay";
-//	port {
-//		usbotg_hs_ep: endpoint {
-//			remote-endpoint = <&con_usb_c_g0_ep>;
-//		};
-//	};
 };
 
 &usbphyc {
